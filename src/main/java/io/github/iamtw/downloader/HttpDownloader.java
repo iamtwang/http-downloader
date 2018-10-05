@@ -13,11 +13,10 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
@@ -45,7 +44,7 @@ public class HttpDownloader {
 	private File localFile;
 	private long[] endPoint;
 	private AtomicLong downloadedBytes = new AtomicLong(0);
-	private AtomicInteger aliveThreads = new AtomicInteger(0);
+	private CountDownLatch latch;
 	private boolean singleThread;
 	private long fileSize = 0;
 	private int threadsNum = 7;
@@ -81,15 +80,18 @@ public class HttpDownloader {
 	public void get() throws IOException {
 		long startTime = System.currentTimeMillis();
 
-		CountDownLatch latch = new CountDownLatch(threadsNum);
-		ExecutorService executor = Executors.newFixedThreadPool(threadsNum);
+		latch = new CountDownLatch(threadsNum);
+		
+		//Do need to shutdown executor after downloading 
+		//ExecutorService executor = Executors.newFixedThreadPool(threadsNum);
 
 		resumable = supportHttpPartialDownload();
 
 		singleThread = !resumable || (threadsNum == 1);
 
 		if (singleThread) {
-			executor.submit(new Worker(0, 0, fileSize - 1, latch));
+			//executor.submit(new Worker(0, 0, fileSize - 1, latch));
+			new Worker(0, 0, fileSize - 1, latch).start();
 		} else {
 			endPoint = new long[threadsNum + 1];
 			long block = fileSize / threadsNum;
@@ -98,7 +100,8 @@ public class HttpDownloader {
 			}
 			endPoint[threadsNum] = fileSize;
 			for (int i = 0; i < threadsNum; i++) {
-				executor.submit(new Worker(i, endPoint[i], endPoint[i + 1] - 1, latch));
+				// executor.submit(new Worker(i, endPoint[i], endPoint[i + 1] - 1, latch));
+				new Worker(i, endPoint[i], endPoint[i + 1] - 1, latch).start();
 			}
 		}
 
@@ -112,10 +115,9 @@ public class HttpDownloader {
 		}
 
 		cleanTempFile();
-
 		long timeElapsed = System.currentTimeMillis() - startTime;
-		logger.info("* File successfully downloaded.");
-		logger.info("* Time used: {} s, Average speed: {} KB/s", timeElapsed / 1000.0,
+		
+		logger.info("File successfully downloaded. Time used: {} s, Average speed: {} KB/s", timeElapsed / 1000.0,
 				downloadedBytes.get() / timeElapsed);
 	}
 
@@ -135,7 +137,7 @@ public class HttpDownloader {
 				con.disconnect();
 				break;
 			} catch (Exception e) {
-				System.out.println("Retry to connect due to connection problem.");
+				logger.info("Retry to connect due to connection problem.");
 			}
 		}
 		logger.debug("Support resume download is {}", (HttpURLConnection.HTTP_PARTIAL == resCode));
@@ -143,21 +145,29 @@ public class HttpDownloader {
 
 	}
 
-	// Start the download monitor
+	/**
+	 * Start the download monitor as daemon
+	 */
 	public void startDownloadMonitor() {
 
-		ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+		//Set to daemon via ThreadFactory
+		ThreadFactory factory = (Runnable runnalbe)->{
+			Thread t = new Thread(runnalbe);
+			t.setDaemon(true);
+			return t;
+		};
+		
+		ScheduledExecutorService executor = Executors.newScheduledThreadPool(1, factory );
 
-		Thread downloadMonitor = new Thread(() -> {
+		Runnable downloadMonitor = ()->{
 			long prev = 0;
 			long curr = 0;
 			curr = downloadedBytes.get();
 			logger.debug("Speed: {} KB/s, Downloaded: {} KB ({}), Threads: {}" ,(curr - prev) >> 10, curr >> 10, curr / (float) fileSize * 100,
-					aliveThreads.get());
+					latch.getCount());
 			prev = curr;
-		});
+		};
 
-		downloadMonitor.setDaemon(true);
 		executor.scheduleAtFixedRate(downloadMonitor, 5, 5, TimeUnit.SECONDS);
 
 	}
@@ -197,14 +207,13 @@ public class HttpDownloader {
 		private long start;
 		private long end;
 		private OutputStream out;
-		private CountDownLatch latch;
+		private CountDownLatch workerLatch;
 
-		public Worker(int id, long start, long end, CountDownLatch latch) {
+		public Worker(int id, long start, long end, CountDownLatch workerLatch) {
 			this.id = id;
 			this.start = start;
 			this.end = end;
-			this.latch = latch;
-			aliveThreads.incrementAndGet();
+			this.workerLatch = workerLatch;
 		}
 
 		@Override
@@ -221,7 +230,7 @@ public class HttpDownloader {
 					logger.debug("Retry to download part {} with {}", (id + 1), this.getName());
 				}
 			}
-			latch.countDown();
+			workerLatch.countDown();
 		}
 
 		private boolean download() {
