@@ -38,8 +38,11 @@ public class HttpDownloader {
 	private static final int MAX_RETRY = 10;
 
 	private static final String KEY_RANGE = "range";
-
+	
+	// If support HTTP_PARTIAL 
 	private boolean resumable;
+	
+	// URL for file
 	private URL url;
 	private File localFile;
 	private long[] endPoint;
@@ -54,7 +57,7 @@ public class HttpDownloader {
 			throw new RuntimeException("please specific the url");
 		}
 		String url = args[0];
-		String last = url.substring(url.lastIndexOf('-') + 1);
+		String last = url.substring(url.lastIndexOf('/') + 1);
 		new HttpDownloader(url, "D:/Code/" + last, 7).get();
 	}
 
