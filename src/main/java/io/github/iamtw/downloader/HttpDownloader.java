@@ -38,9 +38,9 @@ public class HttpDownloader {
 	private static final int MAX_RETRY = 10;
 
 	private static final String KEY_RANGE = "range";
-	
+
 	private AtomicLong downloadedBytes = new AtomicLong(0);
-	// Support HTTP_PARTIAL 
+	// Support HTTP_PARTIAL
 	private boolean resumable;
 	private CountDownLatch latch;
 	private URL url;
@@ -49,8 +49,7 @@ public class HttpDownloader {
 	private boolean singleThread;
 	private long fileSize = 0;
 	private int threadsNum = 7;
-	
-	
+
 	public static void main(String[] args) throws IOException {
 		if (args == null || args.length == 0) {
 			throw new RuntimeException("please specific the url");
@@ -81,25 +80,9 @@ public class HttpDownloader {
 	 */
 	public void get() throws IOException {
 		long startTime = System.currentTimeMillis();
-		latch = new CountDownLatch(threadsNum);
 		
-		resumable = supportHttpPartialDownload();
-		singleThread = !resumable || (threadsNum == 1);
-
-		//thread.start is easier than ExecutorService here as ExecutorService need to shutdown if was used.
-		if (singleThread) {
-			new Worker(0, 0, fileSize - 1, latch).start();
-		} else {
-			endPoint = new long[threadsNum + 1];
-			long block = fileSize / threadsNum;
-			for (int i = 0; i < threadsNum; i++) {
-				endPoint[i] = block * i;
-			}
-			endPoint[threadsNum] = fileSize;
-			for (int i = 0; i < threadsNum; i++) {
-				new Worker(i, endPoint[i], endPoint[i + 1] - 1, latch).start();
-			}
-		}
+		// Start to download file
+		startDownload();
 
 		// Start the download monitor
 		startDownloadMonitor();
@@ -113,9 +96,38 @@ public class HttpDownloader {
 
 		cleanTempFile();
 		long timeElapsed = System.currentTimeMillis() - startTime;
-		
+
 		logger.info("File successfully downloaded. Time used: {} s, Average speed: {} KB/s", timeElapsed / 1000.0,
 				downloadedBytes.get() / timeElapsed);
+	}
+
+	/**
+	 * Check if support HTTP_PARTIAL. 
+	 * if yes, download file with multiple threads;
+	 * if no, download file with single thread.
+	 * 
+	 * Start thread with thread.start()
+	 * if ExecutorServices was used, must shutdown the service after downloading.
+	 * @throws IOException 
+	 */
+	private void startDownload() throws IOException {
+		latch = new CountDownLatch(threadsNum);
+		resumable = supportHttpPartialDownload();
+		singleThread = !resumable || (threadsNum == 1);
+		
+		if (singleThread) {
+			new Worker(0, 0, fileSize - 1, latch).start();
+		} else {
+			endPoint = new long[threadsNum + 1];
+			long block = fileSize / threadsNum;
+			for (int i = 0; i < threadsNum; i++) {
+				endPoint[i] = block * i;
+			}
+			endPoint[threadsNum] = fileSize;
+			for (int i = 0; i < threadsNum; i++) {
+				new Worker(i, endPoint[i], endPoint[i + 1] - 1, latch).start();
+			}
+		}
 	}
 
 	// Check if support download
@@ -143,25 +155,26 @@ public class HttpDownloader {
 	}
 
 	/**
-	 * Start the download monitor as daemon. So this service (thread) can be shutdown automatically. 
+	 * Start the download monitor as daemon. So this service (thread) can be
+	 * shutdown automatically.
 	 */
 	public void startDownloadMonitor() {
 
-		//Set to daemon via ThreadFactory.
-		ThreadFactory factory = (Runnable runnalbe)->{
+		// Set to daemon via ThreadFactory.
+		ThreadFactory factory = (Runnable runnalbe) -> {
 			Thread t = new Thread(runnalbe);
 			t.setDaemon(true);
 			return t;
 		};
-		
-		ScheduledExecutorService executor = Executors.newScheduledThreadPool(1, factory );
 
-		Runnable downloadMonitor = ()->{
+		ScheduledExecutorService executor = Executors.newScheduledThreadPool(1, factory);
+
+		Runnable downloadMonitor = () -> {
 			long prev = 0;
 			long curr = 0;
 			curr = downloadedBytes.get();
-			logger.debug("Speed: {} KB/s, Downloaded: {} KB ({}), Threads: {}" ,(curr - prev) >> 10, curr >> 10, curr / (float) fileSize * 100,
-					latch.getCount());
+			logger.debug("Speed: {} KB/s, Downloaded: {} KB ({}), Threads: {}", (curr - prev) >> 10, curr >> 10,
+					curr / (float) fileSize * 100, latch.getCount());
 			prev = curr;
 		};
 
